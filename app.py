@@ -1,4 +1,4 @@
-from flask import Flask, request, render_template
+from flask import Flask, request, render_template, redirect, flash
 import sys
 import json
 from sqlalchemy import create_engine
@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import requests
 
 app = Flask(__name__)
+app.secret_key = "super secret key"
 SQLALCHEMY_DATABASE_URL = 'sqlite:////tmp/weather.db'
 engine = create_engine(SQLALCHEMY_DATABASE_URL, echo=True, connect_args={'check_same_thread': False})
 SessionLocal = sessionmaker(bind=engine)
@@ -29,11 +30,16 @@ Base.metadata.drop_all(engine) #<--- to clear the database
 Base.metadata.create_all(engine)
 
 
-def get_weather(city):
+def get_weather(id, city):
     r = requests.get('https://api.openweathermap.org/data/2.5/weather?q={}&appid={}'.format(city, API_KEY))
+    if json.loads(r.text)['cod'] == '404':
+        flash("The city doesn't exist!")
+        return redirect('/')
+
     time_now = int(datetime.now(tz=timezone.utc).timestamp())
     day_time = get_daytime(time_now, r.json())
-    dict_with_weather_info = {'degrees': int(json.loads(r.text)['main']['temp']) - 273,
+    dict_with_weather_info = {'id': id,
+                              'degrees': int(json.loads(r.text)['main']['temp']) - 273,
                               'state': json.loads(r.text)['weather'][0]['main'],
                               'city': city,
                               'day_time': day_time}
@@ -52,32 +58,51 @@ def get_daytime(time, response):
         return "night"
 
 
+def check_city(city):
+    r = requests.get('https://api.openweathermap.org/data/2.5/weather?q={}&appid={}'.format(city, API_KEY))
+    if json.loads(r.text)['cod'] == '404':
+        return False
+    else:
+        return True
+
+
 @app.route('/')
 def index():
     cities_weather = []
     for city in session.query(City).order_by(City.id):
-        cities_weather.append(get_weather(city.name))
+        cities_weather.append(get_weather(city.id, city.name))
     return render_template("index.html", cities=cities_weather)
 
 
 @app.route('/', methods=['POST'])
 def add_city():
     new = request.form['city_name'].upper()
-    city_already_there = False
+    if not check_city(new):
+        flash("The city doesn't exist!")
+        return redirect('/')
+
     for city in session.query(City).order_by(City.id):
         if new == city.name:
-            city_already_there = True
+            flash('The city has already been added to the list!')
+            return redirect('/')
 
-    if not city_already_there:
-        new_city = City(name=new)
-        session.add(new_city)
-        session.commit()
+    new_city = City(name=new)
+    session.add(new_city)
+    session.commit()
 
     cities_weather = []
     for city in session.query(City).order_by(City.id):
-        cities_weather.append(get_weather(city.name))
+        cities_weather.append(get_weather(city.id, city.name))
 
     return render_template('index.html', cities=cities_weather)
+
+
+@app.route('/delete/<city_id>', methods=['GET', 'POST'])
+def delete(city_id):
+    city = session.query(City).get(city_id)
+    session.delete(city)
+    session.commit()
+    return redirect('/')
 
 
 # don't change the following way to run flask:
